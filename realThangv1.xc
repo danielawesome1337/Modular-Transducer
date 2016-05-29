@@ -1,39 +1,75 @@
 /*
- * realThangv2.xc
+ * realThangv3.xc
  *
- *  Created on: 11 Mar 2016
+ *  Created on: 15 Mar 2016
  *      Author: Daniel
  */
+
 
 #include <xs1.h>
 #include <stdio.h>
 #include <platform.h>
 #include <functionDecs.h>
-#include <stdio.h>
+#include <timer.h>
 
-out buffered port:4 ports = XS1_PORT_4C;
+//6 4 bit ports for the push/pull output for 12 transducers (2 transducers per port)
+out buffered port:4 PP[6] = {
+        XS1_PORT_4A,
+        XS1_PORT_4B,
+        XS1_PORT_4C,
+        XS1_PORT_4D,
+        XS1_PORT_4E,
+        XS1_PORT_4F,
+};
+
+//12 1 bit ports for the PWM output for 12 transducers
+out buffered port:1 PWM[12] = {
+        XS1_PORT_1A,
+        XS1_PORT_1B,
+        XS1_PORT_1C,
+        XS1_PORT_1D,
+        XS1_PORT_1E,
+        XS1_PORT_1F,
+        XS1_PORT_1G,
+        XS1_PORT_1H,
+        XS1_PORT_1I,
+        XS1_PORT_1J,
+        XS1_PORT_1K,
+        XS1_PORT_1L
+};
 
 //clock declarations
-clock clk = XS1_CLKBLK_1;//push/pull clock
-clock PRFclk = XS1_CLKBLK_2;//pulse repetition frequency clock
+clock PPclk = XS1_CLKBLK_1;//push/pull clock
+clock PWMclk = XS1_CLKBLK_2;//PWM clock
+clock PRFclk = XS1_CLKBLK_3;//pulse repetition frequency clock
 
 int main() {
-    //topRatio is the exact frequency of the push/pull (200000 = 200kHz)
+    //topRatio is the exact frequency of push/pull (200000 = 200kHz)
     //pulseNumber is the number of pulses per test
     //PRF is the pulse repetition frequency
-    unsigned long int topRatio = 210000; //,pulseNumber = 1000, PRF = 1000;
+    unsigned long int topRatio = 400000; //,pulseNumber = 1000, PRF = 1000;
 
-    //halfWidth is the length of the on period = off period of the push/pull (50 ticks per wavelength)
-    //magRatio is the PWM on period out of 50
-    //magRatio should be a matrix for every pulse in a set of pulses
+    //halfWidth is the length of the on period = off period of push/pull (50 ticks per wavelength)
     //pulseLength is the length of each pulse in units of wavelengths
-    unsigned int halfWidth = 25, magRatio = 40; //,pulseLength=10;
+    unsigned int halfWidth = 25; //,pulseLength=10;
 
     //phase is the matrix of how many ticks each port is out of phase where 0 is no shift
-    unsigned int phase = 0;
+    unsigned int phase[12] = {0,0,0,0,0,0,0,0,0,0,0,0};
+
+    //magRatio is the PWM on period out of 50
+    //magRatio should be a matrix for every pulse in a set of pulses
+    unsigned int magRatio[12] = {40,40,40,40,40,40,40,40,40,40,40,40};
 
     //link 4 bit ports to push/pull clock. Initial out = 0
-    configure_out_port(ports, clk, 0);
+    for(size_t i = 0; i < 6; i++)
+    {
+        configure_out_port(PP[i], PPclk, 0);
+    }
+    //link 1 bit ports to PWM clock. Initial out = 0
+    for(size_t i = 0; i < 12; i++)
+    {
+        configure_out_port(PWM[i], PWMclk, 0);
+    }
 
     while(1)
     {
@@ -44,99 +80,128 @@ int main() {
         //READ IN pulseLength
         //READ IN phase.
 
-        configure_clock_rate_at_least(clk,topRatio,20000);//1000000/50=20000 so 50 tick wavelength
-        //configure_clock_rate(PRFclk,PRF,20000);
+        configure_clock_rate_at_least(PPclk,topRatio,20000);//1000000/50=20000 so 50 tick wavelength for every freq
+        configure_clock_rate_at_least(PWMclk,1000,10);//2MHz at 50 tick wavelength
+        //ADD: configure_clock_rate_at_least(PRFclk,PRF,20000);
 
-        while(1)//for(size_t i = 0; i < pulseNumber; i++)
+        while(1)//ADD: for(size_t i = 0; i < pulseNumber; i++)
         {
-            start_clock(PRFclk);
-            //@ PRFclk whatever
-            start_clock(clk);
-            phaseMag(phase, halfWidth, magRatio, ports);
+            //ADD: start_clock(PRFclk);
+            //ADD: @ PRFclk whatever
+            start_clock(PPclk);
+            start_clock(PWMclk);
+            //ADD: if(magRatio) is 50
+
+            /*STUFF HAPPENS NOW*/
+            par
+            {
+                //PWM all run on 1 core
+                [[combine]]
+                 par (size_t i = 0; i < 12; i++)
+                 {
+                    PWMdrive(magRatio[i], PWM[i]);
+                 }
+                //push/pull run on seperate cores
+                par (size_t i = 0; i < 6; i++)
+                {
+                    freqDrive(phase[2*i], phase[(2*i)+1], halfWidth, PP[i]);
+                }
+            }
         }
     }
     return 0;
 }
 
-void phaseMag(unsigned int phase, unsigned int halfWidth,
-        unsigned int magRatio, out buffered port:4 p)//pulseLength
+void freqDrive(unsigned int phase1, unsigned int phase2, unsigned int halfWidth, out buffered port:4 p)//pulseLength
 {
-    //4 bits per port. 1st bit is PWM, 2nd bit is push and 3rd bit is pull
-    //maybe hard code numbers instead of count+-= to increase speed?
-    unsigned long int tF = 100+phase;//delay in push/pull start
-    unsigned long int tM = 0;//start PWM immediately
-    unsigned int count = 5;
-    while (1)//pulseLength not 1
+    //t1 controls the 2 LSB (least significant bit) and t2 controls the 2 MSB (most significant bit)
+    unsigned long int t1 = 200+phase1;//200 tick delay in push/pull start
+    unsigned long int t2 = 200+phase2;
+    unsigned int currentDrive = 5;//01|01 Binary
+    if (t1==t2)
     {
-        if(tM<tF)//if PWM to flip next
+        while(1)
         {
-            switch(count)
+            p @ t1 <: currentDrive=10; t1+=halfWidth;//10|10
+            p @ t1 <: currentDrive=5; t1+=halfWidth;//01|01
+        }
+    }
+    else
+    {
+        while (1)//drives push/pull for main output (pulseLength should go here)
+        {
+            if(t1<t2)//LSB flip
             {
-            case 5://0101
-                p @ tM <: count=4;//0110 OR 0010
-                tM+=50-magRatio;
-                break;
-            case 4:
-                p @ tM <: count=5;//0110 OR 0010
-                tM+=magRatio;
-                break;
-            case 3:
-                p @ tM <: count=2;//0110 OR 0010
-                tM+=50-magRatio;
-                break;
-            case 2:
-                p @ tM <: count=3;//0110 OR 0010
-                tM+=magRatio;
-                break;
+                switch(currentDrive)
+                {
+                case 10://10|10
+                    p @ t1 <: currentDrive=9;//10|01
+                    t1+=halfWidth;
+                    break;
+                case 9://10|01
+                    p @ t1 <: currentDrive=10;//10|10
+                    t1+=halfWidth;
+                    break;
+                case 6://01|10
+                    p @ t1 <: currentDrive=5;//01|01
+                    t1+=halfWidth;
+                    break;
+                case 5://01|01
+                    p @ t1 <: currentDrive=6;//01|10
+                    t1+=halfWidth;
+                    break;
+                }
+            }
+            else//MSB flip
+            {
+                switch(currentDrive)
+                {
+                case 10://10|10
+                    p @ t2 <: currentDrive=6;//01|10
+                    t2+=halfWidth;
+                    break;
+                case 9://10|01
+                    p @ t2 <: currentDrive=5;//01|01
+                    t2+=halfWidth;
+                    break;
+                case 6://01|10
+                    p @ t2 <: currentDrive=10;//10|10
+                    t2+=halfWidth;
+                    break;
+                case 5://01|01
+                    p @ t2 <: currentDrive=9;//10|01
+                    t2+=halfWidth;
+                    break;
+                }
             }
         }
-        if(tM>tF)//if push/pull to flip next
-        {
-            switch(count)
+    }
+}
+
+[[combinable]]
+ void PWMdrive(unsigned int magRatio, out buffered port:1 p)//ADD: need something to tell test ended
+{
+    unsigned int currentDrive=0;
+    unsigned long int t=0;
+    timer tmr;
+    tmr :> t;
+
+    while(1)//drives the PWM to control amplitude
+    {
+        select {
+        case tmr when timerafter(t) :> void:
+            if (currentDrive==0)
             {
-            case 5://0101
-                p @ tF <: count=3;//0011 OR 0010
-                tF+=halfWidth;
-                break;
-            case 4://0100
-                p @ tF <: count=2;//0011 OR 0010
-                tF+=halfWidth;
-                break;
-            case 3://0100
-                p @ tF <: count=5;//0011 OR 0010
-                tF+=halfWidth;
-                break;
-            case 2://0100
-                p @ tF <: count=4;//0011 OR 0010
-                tF+=halfWidth;
-                break;
+                p @ t <: currentDrive=1;
+                t+=magRatio;
             }
-        }
-        else if(tM==tF)//if PWM and push/pull flip at the same time
-        {
-            switch(count)
+            else
             {
-            case 5://0101
-                p @ tF <: count=2;//0010
-                tF+=halfWidth;
-                tM+=50-magRatio;
-                break;
-            case 4://0100
-                p @ tF <: count=3;//0011
-                tF+=halfWidth;
-                tM+=magRatio;
-                break;
-            case 3://0011
-                p @ tF <: count=4;//0100
-                tF+=halfWidth;
-                tM+=50-magRatio;
-                break;
-            case 2://0010
-                p @ tF <: count=5;//0101
-                tF+=halfWidth;
-                tM+=magRatio;
-                break;
+                p @ t <: currentDrive=0;
+                t+=50-magRatio;
             }
+            break;
         }
+        //return somehow
     }
 }
