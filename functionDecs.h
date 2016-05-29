@@ -1,5 +1,2 @@
-void fraction(int ac, char **av);
-
-void phaseChange(int phase, unsigned int halfWidth, out buffered port:1 p);
-
-void magChange(unsigned int magRatio);
+void phaseMag(unsigned int phase, unsigned int halfWidth,
+        unsigned int magRatio, out buffered port:4 p);//pulseLength
