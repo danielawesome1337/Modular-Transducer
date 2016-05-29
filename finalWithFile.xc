@@ -1,5 +1,5 @@
 /*
- * finalWithFile.xc
+ * finalWithFileSlave.xc
  *
  *  Created on: 27 May 2016
  *      Author: dsdan
@@ -35,12 +35,12 @@
 #define SOURCE "parameters.txt"
 
 //port declarations
-//3 1 bit ports used to communicate to slave microcontrollers
-out port goLine = XS1_PORT_1I;
-out port restartLine = XS1_PORT_1J;
-out port quitLine = XS1_PORT_1K;
+//3 1 bit ports used to communicate to master microcontroller
+in port goLine = XS1_PORT_1I;
+in port restartLine = XS1_PORT_1J;
+in port quitLine = XS1_PORT_1K;
 
-//4 4 bit ports for the pp output for 8 transducers (2 transducers per port)
+//4 4 bit ports for the push/pull output for 8 transducers (2 transducers per port)
 out buffered port:4 pp[TRANSDUCER_COUNT/2] = {
         XS1_PORT_4A,
         XS1_PORT_4B,
@@ -60,15 +60,16 @@ out buffered port:1 pwm[TRANSDUCER_COUNT] = {
 };
 
 //clock declarations
-clock ppClk = XS1_CLKBLK_1;//pp clock
+clock ppClk = XS1_CLKBLK_1;//push/pull clock
 clock pwmClk = XS1_CLKBLK_2;//pwm clock
+
 
 int main() {
     //text file reading variables
     char yesNoMaybe = 0;
     unsigned char readBuffer[BUFFER_SIZE];
     int fd;
-    int flagCount;
+    int flagCount = 0;
     unsigned int flags[BUFFER_SIZE];
     unsigned int data[DATA_LENGTH];
 
@@ -104,11 +105,7 @@ int main() {
         //file reading and processing
         while(yesNoMaybe != 'y')
         {
-            goLine <: 0;
-            restartLine <: 0;
-            quitLine <: 0;
             yesNoMaybe = 0;
-
             fd = _open(SOURCE, O_RDONLY, 0);
             if (fd == -1) {
                 printstrln("Error: _open failed. Exiting.");
@@ -117,7 +114,6 @@ int main() {
             _read(fd, readBuffer, BUFFER_SIZE);
 
             //flag every '.' in parameters text file
-            flagCount = 0;
             for(size_t i = 0; i < BUFFER_SIZE; ++i)
             {
                 if(readBuffer[i] == '.')
@@ -187,30 +183,18 @@ int main() {
                 configure_out_port(pwm[i], pwmClk, 0);
             }
 
-            //asking if ready to go
-            while(yesNoMaybe != 'y' && yesNoMaybe != 'r')
+            //recieve instructions from master
+            select
             {
-                printstr("Data recieved and processed! 'y' to commence "
-                        "testing, 'r' to restart or 'q' to quit:");
-                yesNoMaybe = getchar();
-                fflush(stdin);
-                switch(yesNoMaybe)
-                {
-                case 'y':
-                    goLine <: 1; //wait
-                    break;
-                case 'r':
-                    //tell slave microcontrollers to restart file process
-                    restartLine <: 1;
-                    break;
-                case 'q':
-                    //tell slave microcontrollers to quit
-                    quitLine <: 1;
-                    exit(0);
-                    break;
-                }
+            case goLine when pinseq(1) :> void://start outputs
+                yesNoMaybe = 'y';
+                break;
+            case restartLine when pinseq(1) :> void://restart file process
+                break;
+            case quitLine when pinseq(1) :> void://quit
+                exit(0);
+                break;
             }
-            //tell slave microcontrollers to start outputs
         }
 
         //communication between pp and pwm
@@ -224,9 +208,9 @@ int main() {
         {
             //2 pwm outputs per core - 4 cores
             par (size_t i = 0; i < TRANSDUCER_COUNT/2; ++i)
-                            {
+            {
                 pwmDrive(magRatio[2*i], magRatio[(2*i) + 1], magPhase[i], pwm[2*i], pwm[(2*i) + 1], synchPulse[i]);
-                            }
+            }
             //pp all run on seperate cores - 4 cores
             par (size_t i = 0; i < TRANSDUCER_COUNT/2; ++i)
             {
@@ -367,11 +351,11 @@ void pwmDrive(unsigned int magRatio1, unsigned int magRatio2, unsigned int magPh
         select
         {
         case synchPulse :> synch://returns if test has ended
-            if(synch == 1)
-            {
-                return;
-            }
-            break;
+        if(synch == 1)
+        {
+            return;
+        }
+        break;
         default://main drive loop
             p1 @ t1 <: currentDrive[0];
             p2 @ t2 <: currentDrive[1];
