@@ -1,17 +1,18 @@
 /*
- * realThangv5.xc
+ * realThangv6.xc
  *
- *  Created on: 18 May 2016
- *      Author: Daniel
+ *  Created on: 20 May 2016
+ *      Author: dsdan
  */
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <xs1.h>
 #include <platform.h>
-#include <functionDecs.h>
 #include <timer.h>
+#include <math.h>
 #include <print.h>
+
+#include <functionDecs.h>
 
 //4 4 bit ports for the push/pull output for 8 transducers (2 transducers per port)
 out buffered port:4 pp[4] = {
@@ -78,7 +79,7 @@ int main() {
         unsigned int phase[8] = {0,0,0,0,0,0,0,0};//0 to 49
         for(size_t i = 0; i < 8; i++)
         {
-            phase[i]=phase[i]+100;
+            phase[i]=phase[i]+100;//test this
         }
 
         //link 4 bit ports to push/pull clock. Initial out = 0
@@ -93,7 +94,7 @@ int main() {
         }
 
         configure_clock_rate_at_least(ppClk, topRatio, 20000);//1000000/50=20000 so 50 tick wavelength at any freq
-        configure_clock_rate_at_least(pwmClk, 1000, 20);//1MHz at 100 tick wavelength
+        configure_clock_rate_at_least(pwmClk, 1000, 10);//2MHz at 50 tick wavelength
 
         start_clock(ppClk);
         start_clock(pwmClk);
@@ -144,19 +145,38 @@ int main() {
 
 void pwmPhaser(unsigned int magRatio[8], unsigned int magPhase[8])
 {
+    int roundTo5MagRatio = 0;
     for(size_t i = 0; i < 4; i++)
     {
-        if(abs(magRatio[2*i] - magRatio[2*i + 1]) < 2)
+        roundTo5MagRatio = 5*(int)round(magRatio[2*i] / 5);
+        if(roundTo5MagRatio + magRatio[(2*i) + 1] + 5 != 50)
         {
-            if(magRatio[2*i] < 25)
+            if(roundTo5MagRatio + magRatio[(2*i) + 1] + 5 - 50 == magRatio[(2*i)])
             {
-                magPhase[2*i] = magRatio[2*i] + 10;
+                magPhase[(2*i) + 1] == roundTo5MagRatio + 10;
             }
             else
             {
-                magPhase[2*i] = magRatio[2*i] - 10;
+                magPhase[(2*i) + 1] == roundTo5MagRatio + 5;
             }
         }
+        else
+        {
+            if(roundTo5MagRatio + magRatio[(2*i) + 1] + 10 - 50 == magRatio[(2*i)])
+            {
+                magPhase[(2*i) + 1] == roundTo5MagRatio + 15;
+            }
+            else
+            {
+                magPhase[(2*i) + 1] == roundTo5MagRatio + 10;
+            }
+        }
+
+        if(magPhase[(2*i) + 1] > 50)
+        {
+            magPhase[(2*i) + 1] -= 50;
+        }
+
     }
 }
 
@@ -166,6 +186,7 @@ void freqDrive(unsigned int t1, unsigned int t2, unsigned int halfWidth,
 {
     //t1 controls the 2 LSB (least significant bit) and t2 controls the 2 MSB (most significant bit)
     unsigned int currentDrive = 5;//01|01 Binary
+    p <: 5;
     signed int phaseDifference = t1-t2;
     if(t1 == t2)
     {
@@ -194,99 +215,66 @@ void freqDrive(unsigned int t1, unsigned int t2, unsigned int halfWidth,
             }
         }
     }
-    else
+    else if(t1 < t2)
     {
         for(size_t i = 0; i < pulseLength; i++)//drives push/pull for main output
         {
-            if(t1 < t2)//LSB flip
-            {
-                switch(currentDrive)
-                {
-                case 10://10|10
-                    p @ t1 <: currentDrive = 9;//10|01
-                    p @ t2 <: currentDrive = 5;//01|01
-                    break;
-                case 9://10|01
-                    p @ t1 <: currentDrive = 10;//10|10
-                    p @ t2 <: currentDrive = 6;//01|10
-                    break;
-                case 6://01|10
-                    p @ t1 <: currentDrive = 5;//01|01
-                    p @ t2 <: currentDrive = 9;//10|01
-                    break;
-                case 5://01|01
-                    p @ t1 <: currentDrive = 6;//01|10
-                    p @ t2 <: currentDrive = 10;//10|10
-                    break;
-                }
-            }
-            else if(t1 > t2)//MSB flip
-            {
-                switch(currentDrive)
-                {
-                case 10://10|10
-                    p @ t2 <: currentDrive = 6;//01|10
-                    p @ t1 <: currentDrive = 5;//01|01
-                    break;
-                case 9://10|01
-                    p @ t2 <: currentDrive = 5;//01|01
-                    p @ t1 <: currentDrive = 6;//01|10
-                    break;
-                case 6://01|10
-                    p @ t2 <: currentDrive = 10;//10|10
-                    p @ t1 <: currentDrive = 9;//10|01
-                    break;
-                case 5://01|01
-                    p @ t2 <: currentDrive = 9;//10|01
-                    p @ t1 <: currentDrive = 10;//10|10
-                    break;
-                }
-            }
+            p @ t1 <: currentDrive = 6;//01|10
+            p @ t2 <: currentDrive = 10;//10|10
+            t1 += halfWidth;
+            t2 += halfWidth;
+            p @ t1 <: currentDrive = 9;//10|01
+            p @ t2 <: currentDrive = 5;//01|01
             t1 += halfWidth;
             t2 += halfWidth;
         }
     }
-    p <: 0;
+    else
+    {
+        for(size_t i = 0; i < pulseLength; i++)//drives push/pull for main output
+        {
+            p @ t2 <: currentDrive = 9;//10|01
+            p @ t1 <: currentDrive = 10;//10|10
+            t1 += halfWidth;
+            t2 += halfWidth;
+            p @ t2 <: currentDrive = 6;//01|10
+            p @ t1 <: currentDrive = 5;//01|01
+            t1 += halfWidth;
+            t2 += halfWidth;
+        }
+    }
     return;
 }
-
 
 [[combinable]]
  void pwmDrive(unsigned int magRatio, unsigned int magPhase, out buffered port:1 p,
          unsigned int endTime, unsigned int pulseLength)
 {
-    unsigned int Test = 0;
-    timer tmrTest;
-    tmrTest :> Test;
-    unsigned int t = 0;
-    unsigned tEnd = 0;
+    unsigned int t = 20 + magPhase;//test this
+    unsigned int magRatioInverse = 50 - magRatio;
+    unsigned int tEnd = magPhase + endTime;//test this
     unsigned int currentDrive = 0;
-    //unsigned int tEnd=0;//find end time somehow
-    timer tmr1;
-    timer tmr2;
-    tmr1 :> t;
-    tmr2 :> tEnd;
-    t += magPhase;
-    tEnd = magPhase + tEnd + endTime;//may be wrong
+    timer tmr;
 
     while(1)//drives the pwm to control amplitude
     {
         select{
-        case tmr1 when timerafter(t) :> void:
-            if(currentDrive == 0 && magRatio != 0)
+        case tmr when timerafter(0) :> void:
+            if(t > tEnd)
+            {
+                p @ t <: 0;
+                return;
+            }
+            else if(currentDrive == 0 && magRatio != 0)
             {
                 p @ t <: currentDrive = 1;
                 t += magRatio;
             }
-            else if(currentDrive == 1 && magRatio != 50)
+            else if(magRatio != 50)
             {
                 p @ t <: currentDrive = 0;
-                t += 50 - magRatio;
+                t += magRatioInverse;
             }
-            break;
-        case tmr2 when timerafter(tEnd) :> void:
-            p <: 0;
-            return;
             break;
         }
     }
