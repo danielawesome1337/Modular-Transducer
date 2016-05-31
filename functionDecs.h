@@ -42,8 +42,6 @@ void dataCapture(unsigned int data[DATA_LENGTH]);
 
 short pwmPhaser(pwmStruct pwmD1, pwmStruct pwmD2);
 
-unsigned int binaryChop(unsigned int topRatio);
-
 void clockConfig(unsigned int topRatio);
 
 void pwmDrive(pwmStruct pwmD1, pwmStruct pwmD2,
