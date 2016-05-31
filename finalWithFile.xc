@@ -149,27 +149,25 @@ void dataProcessor(ppStruct ppD[TRANSDUCER_COUNT], pwmStruct pwmD[TRANSDUCER_COU
     for(size_t i = 0; i < TRANSDUCER_COUNT; ++i)
     {
 
-        ppD[i].phase = data[i + 6];
-        pwmD[i].magRatio = data[i + 14];
+        ppD[i].phase = data[i + 14];
+        pwmD[i].magRatio = data[i + 6];
     }
-
-    //clockRate is the frequency at which ppClk will run at (REF_RATE*topRate/DIVIDER
-    //rounded up to the closest REF_RATE/(2*n) where int n = 1 to 255)
-    unsigned int clockRate = binaryChop(ppD[0].topRatio);
 
     //introduce PP_DELAY to every pp
     for(size_t i = 0; i < TRANSDUCER_COUNT; ++i)
     {
         ppD[i].phase = ppD[i].phase + PP_DELAY;
-        ppD[i].burstWait = ((ppD[i].topRatio/ppD[i].brf) -
-                (ppD[i].burstLength/ppD[i].prf))*clockRate;//-2
-        ppD[i].pulseWait = ((ppD[i].topRatio/ppD[i].prf) -
-                (ppD[i].pulseLength/ppD[i].topRatio))*clockRate;//-2
+        ppD[i].burstWait = (REF_RATE/ppD[i].brf) -
+                (REF_RATE*ppD[i].burstLength/ppD[i].prf);//-2
+        ppD[i].pulseWait = (REF_RATE/ppD[i].prf) -
+                (REF_RATE*ppD[i].pulseLength/ppD[i].topRatio);//-2
     }
     for(size_t i = 0; i < TRANSDUCER_COUNT/2; ++i)
     {
         pwmD[2*i].magPhase = 0;
+        pwmD[(2*i) + 1].magPhase = 0;
         pwmD[(2*i) + 1].magPhase = pwmPhaser(pwmD[2*i], pwmD[(2*i) + 1]);
+
     }
 
     clockConfig(ppD[0].topRatio);
@@ -181,7 +179,7 @@ void dataCapture(unsigned int data[DATA_LENGTH])
     unsigned char readBuffer[BUFFER_SIZE];
     int fd;
     int flagCount = 0;
-    unsigned int flags[BUFFER_SIZE];
+    unsigned int flags[DATA_LENGTH + 1];
 
     fd = _open(SOURCE, O_RDONLY, 0);
     if (fd == -1) {
@@ -193,7 +191,7 @@ void dataCapture(unsigned int data[DATA_LENGTH])
     //flag every '.' in parameters text file
     for(size_t i = 0; i < BUFFER_SIZE; ++i)
     {
-        if(readBuffer[i] == '.')
+        if(readBuffer[i] == '.' && flagCount < DATA_LENGTH + 1)
         {
             flags[flagCount] = i;
             flagCount++;
@@ -207,11 +205,11 @@ void dataCapture(unsigned int data[DATA_LENGTH])
     }
     for(size_t i = 0; i < DATA_LENGTH; ++i)
     {
-        for(size_t j = flags[i]+1; j < flags[i+1]; ++j)
+        for(size_t j = flags[i] + 1; j < flags[i+1]; ++j)
         {
             data[i] = data[i] * 10 + (readBuffer[j] - '0');
         }
-        //printf("%d\n",data[i]); //debugging
+        //printintln(data[i]); //debugging
     }
 
     if (_close(fd) != 0)
@@ -256,51 +254,6 @@ short pwmPhaser(pwmStruct pwmD1, pwmStruct pwmD2)
         pwmD2.magPhase -= 50;
     }
     return pwmD2.magPhase;
-}
-
-
-//find actual clockRate using binary chop algorithm
-unsigned int binaryChop(unsigned int topRatio)
-{
-    int first = 0;
-    int last = 255;
-    int middle = round(first + last)/2;
-    unsigned int clockRate = round((topRatio/DIVIDER)*1000000);
-
-    unsigned int clockRateTable[256] = {REF_RATE};
-    for(size_t i = 1; i < 256; ++i)
-    {
-        clockRateTable[i] = round(REF_RATE/(2*i));
-    }
-
-    while (first <= last)
-    {
-        if(clockRateTable[middle] == clockRate)
-        {
-            clockRate = clockRateTable[middle];
-            return clockRate;
-        }
-        else if((clockRateTable[middle] < clockRate) && (clockRateTable[middle - 1] >= clockRate))
-        {
-            clockRate = clockRateTable[middle - 1];
-            return clockRate;
-        }
-        else if(clockRateTable[middle] < clockRate)
-        {
-            last = middle - 1;
-        }
-        else
-        {
-            first = middle + 1;
-        }
-        middle = round(first + last)/2;
-    }
-    if (first > last)
-    {
-        printstr("clockRate could not be determined. Exiting.");
-        exit(1);
-    }
-    return 0;
 }
 
 
