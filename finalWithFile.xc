@@ -6,15 +6,15 @@
  */
 
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <syscall.h>
-#include <xs1.h>
-#include <platform.h>
-#include <timer.h>
-#include <math.h>
-#include <print.h>
-#include <functionDecs.h>
+#include <xs1.h> //essential
+#include <platform.h> //essential
+#include <stdlib.h> //exiting
+#include <syscall.h> //file operations
+#include <stdio.h> //reading from console
+#include <print.h> //writing to console and debugging
+#include <timer.h> //delays
+#include <math.h> //rounding
+#include <functionDecs.h> //function declarations
 
 //preprocessor
 //TRANSDUCER_COUNT is number of transducers per microcontroller
@@ -116,9 +116,9 @@ int main() {
         {
             //2 pwm outputs per core - 4 cores
             par (size_t i = 0; i < TRANSDUCER_COUNT/2; ++i)
-            {
+                                    {
                 pwmDrive(pwmDatabase[2*i], pwmDatabase[(2*i) + 1], pwm[2*i], pwm[(2*i) + 1], synchPulse[i]);
-            }
+                                    }
             //pp all run on seperate cores - 4 cores
             par (size_t i = 0; i < TRANSDUCER_COUNT/2; ++i)
             {
@@ -149,8 +149,8 @@ void dataProcessor(ppStruct ppD[TRANSDUCER_COUNT], pwmStruct pwmD[TRANSDUCER_COU
     for(size_t i = 0; i < TRANSDUCER_COUNT; ++i)
     {
 
-        ppD[i].phase = data[i + 14];
-        pwmD[i].magRatio = data[i + 6];
+        ppD[i].phase = data[i + 6];
+        pwmD[i].magRatio = data[i + 14];
     }
 
     //introduce PP_DELAY to every pp
@@ -167,7 +167,6 @@ void dataProcessor(ppStruct ppD[TRANSDUCER_COUNT], pwmStruct pwmD[TRANSDUCER_COU
         pwmD[2*i].magPhase = 0;
         pwmD[(2*i) + 1].magPhase = 0;
         pwmD[(2*i) + 1].magPhase = pwmPhaser(pwmD[2*i], pwmD[(2*i) + 1]);
-
     }
 
     clockConfig(ppD[0].topRatio);
@@ -179,7 +178,7 @@ void dataCapture(unsigned int data[DATA_LENGTH])
     unsigned char readBuffer[BUFFER_SIZE];
     int fd;
     int flagCount = 0;
-    unsigned int flags[DATA_LENGTH + 1];
+    unsigned int flags[BUFFER_SIZE];
 
     fd = _open(SOURCE, O_RDONLY, 0);
     if (fd == -1) {
@@ -191,7 +190,7 @@ void dataCapture(unsigned int data[DATA_LENGTH])
     //flag every '.' in parameters text file
     for(size_t i = 0; i < BUFFER_SIZE; ++i)
     {
-        if(readBuffer[i] == '.' && flagCount < DATA_LENGTH + 1)
+        if(readBuffer[i] == '.')
         {
             flags[flagCount] = i;
             flagCount++;
@@ -205,11 +204,11 @@ void dataCapture(unsigned int data[DATA_LENGTH])
     }
     for(size_t i = 0; i < DATA_LENGTH; ++i)
     {
-        for(size_t j = flags[i] + 1; j < flags[i+1]; ++j)
+        for(size_t j = flags[i]+1; j < flags[i+1]; ++j)
         {
             data[i] = data[i] * 10 + (readBuffer[j] - '0');
         }
-        //printintln(data[i]); //debugging
+        //printf("%d\n",data[i]); //debugging
     }
 
     if (_close(fd) != 0)
@@ -248,12 +247,12 @@ short pwmPhaser(pwmStruct pwmD1, pwmStruct pwmD2)
             pwmD2.magPhase == roundTo5MagRatio + 10;
         }
     }
-
     if(pwmD2.magPhase > 50)
     {
         pwmD2.magPhase -= 50;
     }
     return pwmD2.magPhase;
+
 }
 
 
@@ -383,32 +382,82 @@ void freqDrive(ppStruct ppD1, ppStruct ppD2, out buffered port:4 p, streaming ch
                     p @ t1 <: currentDrive = 9; t1 += HALF_WIDTH;//10|01
                 }
             }
-            else if(t1 < t2)
+            else if(abs(phaseDifference) > HALF_WIDTH)
             {
-                for(size_t i = 0; i < ppD1.pulseLength; ++i)
+                if(t1 < t2)
                 {
                     p @ t1 <: currentDrive = 6;//01|10
-                    p @ t2 <: currentDrive = 10;//10|10
                     t1 += HALF_WIDTH;
-                    t2 += HALF_WIDTH;
-                    p @ t1 <: currentDrive = 9;//10|01
-                    p @ t2 <: currentDrive = 5;//01|01
-                    t1 += HALF_WIDTH;
-                    t2 += HALF_WIDTH;
-                }
-            }
-            else//if t2 > t1
-            {
-                for(size_t i = 0; i < ppD1.pulseLength; ++i)
-                {
-                    p @ t2 <: currentDrive = 9;//10|01
-                    p @ t1 <: currentDrive = 10;//10|10
-                    t1 += HALF_WIDTH;
-                    t2 += HALF_WIDTH;
-                    p @ t2 <: currentDrive = 6;//01|10
                     p @ t1 <: currentDrive = 5;//01|01
                     t1 += HALF_WIDTH;
+                    for(size_t i = 0; i < ppD1.pulseLength - 1; ++i)
+                    {
+                        p @ t2 <: currentDrive = 9;//10|01
+                        p @ t1 <: currentDrive = 10;//10|10
+                        t1 += HALF_WIDTH;
+                        t2 += HALF_WIDTH;
+                        p @ t2 <: currentDrive = 6;//01|10
+                        p @ t1 <: currentDrive = 5;//01|01
+                        t1 += HALF_WIDTH;
+                        t2 += HALF_WIDTH;
+                    }
+                    p @ t2 <: currentDrive = 9;//10|01
                     t2 += HALF_WIDTH;
+                    p @ t2 <: currentDrive = 5;//01|01
+                    t2 += HALF_WIDTH;
+                }
+                else
+                {
+                    p @ t2 <: currentDrive = 9;//10|01
+                    t2 += HALF_WIDTH;
+                    p @ t2 <: currentDrive = 5;//01|01
+                    t2 += HALF_WIDTH;
+                    for(size_t i = 0; i < ppD1.pulseLength - 1; ++i)
+                    {
+                        p @ t1 <: currentDrive = 6;//01|10
+                        p @ t2 <: currentDrive = 10;//10|10
+                        t1 += HALF_WIDTH;
+                        t2 += HALF_WIDTH;
+                        p @ t1 <: currentDrive = 9;//10|01
+                        p @ t2 <: currentDrive = 5;//01|01
+                        t1 += HALF_WIDTH;
+                        t2 += HALF_WIDTH;
+                    }
+                    p @ t1 <: currentDrive = 6;//01|10
+                    t1 += HALF_WIDTH;
+                    p @ t1 <: currentDrive = 5;//01|01
+                    t1 += HALF_WIDTH;
+                }
+            }
+            else
+            {
+                if(t1 < t2)
+                {
+                    for(size_t i = 0; i < ppD1.pulseLength; ++i)
+                    {
+                        p @ t1 <: currentDrive = 6;//01|10
+                        p @ t2 <: currentDrive = 10;//10|10
+                        t1 += HALF_WIDTH;
+                        t2 += HALF_WIDTH;
+                        p @ t1 <: currentDrive = 9;//10|01
+                        p @ t2 <: currentDrive = 5;//01|01
+                        t1 += HALF_WIDTH;
+                        t2 += HALF_WIDTH;
+                    }
+                }
+                else
+                {
+                    for(size_t i = 0; i < ppD1.pulseLength; ++i)
+                    {
+                        p @ t2 <: currentDrive = 9;//10|01
+                        p @ t1 <: currentDrive = 10;//10|10
+                        t1 += HALF_WIDTH;
+                        t2 += HALF_WIDTH;
+                        p @ t2 <: currentDrive = 6;//01|10
+                        p @ t1 <: currentDrive = 5;//01|01
+                        t1 += HALF_WIDTH;
+                        t2 += HALF_WIDTH;
+                    }
                 }
             }
             //wait before next pulse
