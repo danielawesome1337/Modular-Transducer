@@ -1,27 +1,33 @@
 /*
- * struct.xc
+ * master.xc
  *
- *  Created on: 29 May 2016
- *      Author: dsdan
+ *  Created on: 3 Jun 2016
+ *      Author: Daniel
  */
 
 
+#ifndef SYS_HEADERS
+#define SYS_HEADERS
 #include <xs1.h> //essential
 #include <platform.h> //essential
+#include <stdint.h> //variable types
+#include <i2c.h> //i2c
 #include <stdlib.h> //exiting
 #include <syscall.h> //file operations
 #include <stdio.h> //reading from console
 #include <print.h> //writing to console and debugging
 #include <timer.h> //delays
 #include <math.h> //rounding
-#include <functionDecs.h> //function declarations
+#endif
+
+#include <xCFunctions.h> //function declarations
+#include <AdafruitTranslation.h> //Adafruit_SI5351 i2c connection
 
 //preprocessor
 //TRANSDUCER_COUNT is number of transducers per microcontroller
 //REF_RATE is the reference clock rate at 100MHz
 //HALF_WIDTH is half length waveperiod of push/pull (pp) in ticks
 //PP_DELAY is many ticks much pp is delayed by. To precharge capacitors
-//DIVIDER is the number REF_RATE is divided by to set pp frequency
 //BUFFER_SIZE is input data buffer from parameters text file
 //DATA_LENGTH is the number of parameters
 //SOURCE is path to parameters text file
@@ -31,18 +37,14 @@
 #define REF_RATE 100000000
 #define HALF_WIDTH 25
 #define PP_DELAY 100//600000000 for normal operation
-#define DIVIDER 20000//20000 for 50 tick waveperiods upto 2MHz
 #define BUFFER_SIZE 128
 #ifndef DATA_LENGTH
-#define DATA_LENGTH 22//8 each for phase and magRatio, 6 for rest
+#define DATA_LENGTH 28
 #endif
 #define SOURCE "parameters.txt"
 
 //port declarations
-//3 1 bit ports used to communicate to slave microcontrollers
-out port goLine = XS1_PORT_1I;
-out port restartLine = XS1_PORT_1J;
-out port quitLine = XS1_PORT_1K;
+
 
 //4 4 bit ports for the pp output for 8 transducers (2 transducers per port)
 out buffered port:4 pp[TRANSDUCER_COUNT/2] = {
@@ -63,29 +65,50 @@ out buffered port:1 pwm[TRANSDUCER_COUNT] = {
         XS1_PORT_1H
 };
 
+//3 1 bit ports used to communicate to slave microcontrollers
+out port goLine = XS1_PORT_1I;
+out port restartLine = XS1_PORT_1J;
+out port quitLine = XS1_PORT_1K;
+
+//i2c 1 bit ports and clk in
+port p_scl = XS1_PORT_1L;
+port p_sda = XS1_PORT_1M;
+in port inClk = XS1_PORT_1N;
+
 //clock declarations
 clock ppClk = XS1_CLKBLK_1;//pp clock
 clock pwmClk = XS1_CLKBLK_2;//pwm clock
+
 
 int main() {
     char yesNoMaybe = 0;
     ppStruct ppDatabase[TRANSDUCER_COUNT];
     pwmStruct pwmDatabase[TRANSDUCER_COUNT];
+    i2c_master_if i2c[1];
 
     while(1)
     {
         yesNoMaybe = 0;
-        goLine <: 0;
-        restartLine <: 0;
-        quitLine <: 0;
+
         while(yesNoMaybe != 'y')
         {
+            goLine <: 0;
+            restartLine <: 0;
+            quitLine <: 0;
+
             //all sorts of crazy
-            dataProcessor(ppDatabase,pwmDatabase);
+            dataProcessor(ppDatabase, pwmDatabase);
+
+            par
+            {
+                i2c_master(i2c, 1, p_scl, p_sda, 400);
+                adaSet(i2c[0], ppDatabase[0]);
+            }
+            clkSet();
 
             //asking if ready to go
             printstr("Data recieved and processed! 'y' to commence "
-                    "testing, 'r' to restart or 'q' to quit:");
+                    "testing, 'r' to restart or 'q' to quit: ");
             yesNoMaybe = getchar();
             fflush(stdin);
             switch(yesNoMaybe)
@@ -116,9 +139,9 @@ int main() {
         {
             //2 pwm outputs per core - 4 cores
             par (size_t i = 0; i < TRANSDUCER_COUNT/2; ++i)
-                                    {
+            {
                 pwmDrive(pwmDatabase[2*i], pwmDatabase[(2*i) + 1], pwm[2*i], pwm[(2*i) + 1], synchPulse[i]);
-                                    }
+            }
             //pp all run on seperate cores - 4 cores
             par (size_t i = 0; i < TRANSDUCER_COUNT/2; ++i)
             {
@@ -139,12 +162,18 @@ void dataProcessor(ppStruct ppD[TRANSDUCER_COUNT], pwmStruct pwmD[TRANSDUCER_COU
 
     for(size_t i = 0; i < TRANSDUCER_COUNT; ++i)
     {
-        ppD[i].topRatio = data[0];
+        ppD[i].frequency = data[0];
         ppD[i].testLength = data[1];
         ppD[i].burstLength = data[2];
         ppD[i].brf = data[3];
         ppD[i].pulseLength = data[4];
         ppD[i].prf = data[5];
+        ppD[i].PLLmult = data[22];
+        ppD[i].PLLnum = data[23];
+        ppD[i].PLLdenom = data[24];
+        ppD[i].multisynthDiv = data[25];
+        ppD[i].multisynthNum = data[26];
+        ppD[i].multisynthDenom = data[27];
     }
     for(size_t i = 0; i < TRANSDUCER_COUNT; ++i)
     {
@@ -160,7 +189,7 @@ void dataProcessor(ppStruct ppD[TRANSDUCER_COUNT], pwmStruct pwmD[TRANSDUCER_COU
         ppD[i].burstWait = (REF_RATE/ppD[i].brf) -
                 (REF_RATE*ppD[i].burstLength/ppD[i].prf);//-2
         ppD[i].pulseWait = (REF_RATE/ppD[i].prf) -
-                (REF_RATE*ppD[i].pulseLength/ppD[i].topRatio);//-2
+                (REF_RATE*ppD[i].pulseLength/ppD[i].frequency);//-2
     }
     for(size_t i = 0; i < TRANSDUCER_COUNT/2; ++i)
     {
@@ -168,8 +197,6 @@ void dataProcessor(ppStruct ppD[TRANSDUCER_COUNT], pwmStruct pwmD[TRANSDUCER_COU
         pwmD[(2*i) + 1].magPhase = 0;
         pwmD[(2*i) + 1].magPhase = pwmPhaser(pwmD[2*i], pwmD[(2*i) + 1]);
     }
-
-    clockConfig(ppD[0].topRatio);
 }
 
 
@@ -181,7 +208,8 @@ void dataCapture(unsigned int data[DATA_LENGTH])
     unsigned int flags[BUFFER_SIZE];
 
     fd = _open(SOURCE, O_RDONLY, 0);
-    if (fd == -1) {
+    if (fd == -1)
+    {
         printstrln("Error: _open failed. Exiting.");
         exit(1);
     }
@@ -190,7 +218,7 @@ void dataCapture(unsigned int data[DATA_LENGTH])
     //flag every '.' in parameters text file
     for(size_t i = 0; i < BUFFER_SIZE; ++i)
     {
-        if(readBuffer[i] == '.')
+        if(readBuffer[i] == '.' && flagCount < DATA_LENGTH + 1)
         {
             flags[flagCount] = i;
             flagCount++;
@@ -256,13 +284,41 @@ short pwmPhaser(pwmStruct pwmD1, pwmStruct pwmD2)
 }
 
 
+void adaSet(client i2c_master_if i2c, ppStruct ppD) {
+    Adafruit_SI5351 ada;
+    Adafruit_SI5351Config(ada);
+    if (begin(i2c, ada) != ERROR_NONE)
+    {
+        printstrln("Cannot connect to Adafruit SI5351. Exiting.");
+        exit(1);
+    }
+    if(ppD.PLLnum == 0)
+    {
+        setupPLLInt(i2c, ada, SI5351_PLL_A, ppD.PLLmult);
+    }
+    else
+    {
+        setupPLL(i2c, ada, SI5351_PLL_A, ppD.PLLmult, ppD.PLLnum, ppD.PLLdenom);
+    }
+
+    if(ppD.multisynthNum == 0)
+    {
+        setupMultisynthInt(i2c, ada, 0, SI5351_PLL_A, ppD.multisynthDiv);
+    }
+    else
+    {
+        setupMultisynth(i2c, ada, 0, SI5351_PLL_A, ppD.multisynthDiv, ppD.multisynthNum, ppD.multisynthDenom);
+    }
+
+    enableOutputs(i2c, ada, true);
+}
+
+
 //clocks things over the head
-void clockConfig(unsigned int topRatio)
+void clkSet()
 {
-    //second param/third param = ideal clock rate in MHz
-    //this is rounded up to closest REF_RATE/(2*n) where int n = 1 to 255
-    configure_clock_rate_at_least(ppClk, topRatio, DIVIDER);
-    configure_clock_rate_at_least(pwmClk, 1000, 10);//2MHz at 50 tick waveperiod
+    configure_clock_src(ppClk, inClk);
+    configure_clock_ref(pwmClk, 0);//2MHz at 50 tick waveperiod
 
     //link 4 bit ports to ppClk. Initial out = 0
     for(size_t i = 0; i < TRANSDUCER_COUNT/2; ++i)
