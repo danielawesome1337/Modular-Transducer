@@ -13,7 +13,7 @@ CONTENTS OF THIS FILE
 
 INTRODUCTION
 ------------
-This README covers how to successfully start the Modular Ultrasound Transducer Array System (MUTAS) and redistribute .xe binaries (or executables) should there be a need to recompile said binaries.
+This README covers how to successfully start the Modular Ultrasound Transducer Array System (MUTAS).
 The directory that contains this README will be referred to as root.
 
 This README was made as a part of a third year group project by Daniel Ko.
@@ -24,7 +24,9 @@ PARAMETER TEXT FILE FORMAT
 --------------------------
  * Must be saved as 'parameters.txt' in numbered folders in root (one for each micocontroller)
  * Must be in the form of:
-.2000000.100.5.100.3.10000.40.40.40.40.40.40.40.40.0.0.0.0.0.0.0.0.20.0.1.8.0.1
+
+.2000000.100.5.100.3.10000.40.40.40.40.40.40.40.40.0.0.0.0.0.0.0.0.20.0.1.8.0.1..
+
  * From left to right:
   - frequency
   - testLength is the number of bursts in the test
@@ -34,23 +36,26 @@ PARAMETER TEXT FILE FORMAT
   - prf is the pulse repetition frequency (10000Hz max)
   - 8 values for magRatio which is the pwm 'on' period proportional to magnitude of push/pull (currently 0 to 50)
   - 8 values for phase of push/pull which is the number of ticks each transducer is delayed by (currently 0 to 49)
+
+ * The last 6 numbers (20.0.1.8.0.1..) do not need to be included if following this README on running microcontrollers
   - PLLmult is integer multiplication of 25MHz Adafruit clock generator (15 to 90)
   - PLLnum is numerator of fractional component of multiplication of 25MHz Adafruit clock generator (0 to 1,048,575)
   - PLLdenom is denominator of fractional component of multiplication of 25MHz Adafruit clock generator (1 to 1,048,575)
   - MultisynthDiv is integer division of PLL frequency (4 to 900)
   - MultisynthNum is numerator of fractional component of PLL frequency (0 to 1,048,575)
   - MultisynthDenom is denominator of fractional component of PLL frequency (1 to 1,048,575)
+
  * So clock generator frequency = (25*(PPLmult + PPLnum/PPLdenom))/(MultisynthDiv + MultisynthNum/MultisynthDenom)
  * CLOCK GENERATOR FREQUNCY MUST BE 50 TIMES THE REQUIRED TRANSDUCER FREQUENCY
  * THERE MUST BE NO SPACES IN THE TEXT FILE
- * FIRST AND LAST FULL STOPS (.) MUST BE INCLUDED
 
 
 HOW TO GENERATE CLOCK GENERATOR PARAMETERS
 ------------------------------------------
- * Run 'Adafruit clockgen params.exe'
- * Enter desired TRANSDUCER FREQUENCY
- * A text file of parameters will be generated and saved as 'clkParams.txt' in root
+ * Save master parameters.txt in folder 1
+ * Run 'clockGenParams.exe'
+ * The parameters.txt in folder 1 will be appended with correct parameters
+ * NOTE: 'runMaster.bat' and 'run32.bat' will run 'clockGenParams.exe' automatically
 
 
 HOW TO RUN 1 MICROCONTROLLER
