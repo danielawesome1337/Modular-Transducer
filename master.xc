@@ -20,31 +20,27 @@
 #include <math.h> //rounding
 #endif
 
-#include <xCFunctions.h> //function declarations
-#include <AdafruitTranslation.h> //Adafruit_SI5351 i2c connection
+#include "xCFunctions.h" //function declarations
+#include "AdafruitTranslation.h" //Adafruit_SI5351 i2c connection
 
-//preprocessor
 //TRANSDUCER_COUNT is number of transducers per microcontroller
-//REF_RATE is the reference clock rate at 100MHz
-//HALF_WIDTH is half length waveperiod of push/pull (pp) in ticks
-//PP_DELAY is many ticks much pp is delayed by. To precharge capacitors
-//BUFFER_SIZE is input data buffer from parameters text file
 //DATA_LENGTH is the number of parameters
-//SOURCE is path to parameters text file
 #ifndef TRANSDUCER_COUNT
 #define TRANSDUCER_COUNT 8
 #endif
-#define REF_RATE 100000000
-#define HALF_WIDTH 25
-#define PP_DELAY 100//600000000 for normal operation
-#define BUFFER_SIZE 128
 #ifndef DATA_LENGTH
 #define DATA_LENGTH 28
 #endif
+
+//HALF_WIDTH is half length waveperiod of push/pull (pp) in ticks
+//PP_DELAY is many milliseconds pp is delayed by wrt pwm to precharge capacitors
+//BUFFER_SIZE is input data buffer from parameters text file
+//SOURCE is path to parameters text file
+#define HALF_WIDTH 25
+#define FULL_WIDTH (2*HALF_WIDTH)
+#define PP_DELAY 6
+#define BUFFER_SIZE 128
 #define SOURCE "parameters.txt"
-
-//port declarations
-
 
 //4 4 bit ports for the pp output for 8 transducers (2 transducers per port)
 out buffered port:4 pp[TRANSDUCER_COUNT/2] = {
@@ -60,9 +56,9 @@ out buffered port:1 pwm[TRANSDUCER_COUNT] = {
         XS1_PORT_1C,
         XS1_PORT_1D,
         XS1_PORT_1E,
-        XS1_PORT_1F,
-        XS1_PORT_1G,
-        XS1_PORT_1H
+        XS1_PORT_1L,
+        XS1_PORT_1M,
+        XS1_PORT_1N
 };
 
 //3 1 bit ports used to communicate to slave microcontrollers
@@ -70,14 +66,14 @@ out port goLine = XS1_PORT_1I;
 out port restartLine = XS1_PORT_1J;
 out port quitLine = XS1_PORT_1K;
 
-//i2c 1 bit ports and clk in
-port p_scl = XS1_PORT_1L;
-port p_sda = XS1_PORT_1M;
-in port inClk = XS1_PORT_1N;
+//i2c 1 bit ports and reference clock signal from Adafruit Si5351
+port p_scl = XS1_PORT_1F;
+port p_sda = XS1_PORT_1G;
+in port inClk = XS1_PORT_1H;
 
-//clock declarations
-clock ppClk = XS1_CLKBLK_1;//pp clock
-clock pwmClk = XS1_CLKBLK_2;//pwm clock
+//reference clocks to drive outputs
+clock ppClk = XS1_CLKBLK_1;
+clock pwmClk = XS1_CLKBLK_2;
 
 
 int main() {
@@ -85,6 +81,9 @@ int main() {
     ppStruct ppDatabase[TRANSDUCER_COUNT];
     pwmStruct pwmDatabase[TRANSDUCER_COUNT];
     i2c_master_if i2c[1];
+
+    //configure output ports and reference clocks
+    clkSet();
 
     while(1)
     {
@@ -96,7 +95,7 @@ int main() {
             restartLine <: 0;
             quitLine <: 0;
 
-            //all sorts of crazy
+            //import data from parameters text file and configure outputs
             dataProcessor(ppDatabase, pwmDatabase);
 
             par
@@ -104,9 +103,8 @@ int main() {
                 i2c_master(i2c, 1, p_scl, p_sda, 400);
                 adaSet(i2c[0], ppDatabase[0]);
             }
-            clkSet();
 
-            //asking if ready to go
+            //wait for user input
             printstr("Data recieved and processed! 'y' to commence "
                     "testing, 'r' to restart or 'q' to quit: ");
             yesNoMaybe = getchar();
@@ -114,7 +112,8 @@ int main() {
             switch(yesNoMaybe)
             {
             case 'y':
-                goLine <: 1; //tell slave microcontrollers to start outputs
+                //tell slave microcontrollers to start outputs
+                goLine <: 1;
                 break;
             case 'r':
                 //tell slave microcontrollers to restart file process
@@ -131,17 +130,17 @@ int main() {
         //communication between pp and pwm
         streaming chan synchPulse[TRANSDUCER_COUNT];
 
+        //begin test
         start_clock(ppClk);
         start_clock(pwmClk);
-
-        /*STUFF HAPPENS NOW*/
         par
         {
             //2 pwm outputs per core - 4 cores
             par (size_t i = 0; i < TRANSDUCER_COUNT/2; ++i)
-            {
-                pwmDrive(pwmDatabase[2*i], pwmDatabase[(2*i) + 1], pwm[2*i], pwm[(2*i) + 1], synchPulse[i]);
-            }
+                    {
+                pwmDrive(pwmDatabase[2*i], pwmDatabase[(2*i) + 1],
+                        pwm[2*i], pwm[(2*i) + 1], synchPulse[i]);
+                    }
             //pp all run on seperate cores - 4 cores
             par (size_t i = 0; i < TRANSDUCER_COUNT/2; ++i)
             {
@@ -153,6 +152,39 @@ int main() {
 }
 
 
+/*
+ *      Links clocks to ports
+ *
+ *      - Set signal from Adafruit Si5351 as reference clock for pp
+ *      - Set 100MHz clock as reference for pwm -> 2MHz at 50 tick wavelength
+ */
+void clkSet()
+{
+    configure_clock_src(ppClk, inClk);
+    configure_clock_ref(pwmClk, 0);
+
+    //link ports to clocks. Initial out = 0
+    for(size_t i = 0; i < TRANSDUCER_COUNT/2; ++i)
+    {
+        configure_out_port(pp[i], ppClk, 0);
+    }
+    for(size_t i = 0; i < TRANSDUCER_COUNT; ++i)
+    {
+        configure_out_port(pwm[i], pwmClk, 0);
+    }
+}
+
+
+/*
+ *      Processes data from dataCapture
+ *
+ *      - Saves data to ppD and pwmD (sent by reference)
+ *      - Adds pp delay to phase
+ *      - Calculates pulseWait and burstWait
+ *      - Adds phase to pwm output
+ *      \param  ppD     struct to store pp parameters
+ *      \param  pwmD    struct to store pwm parameters
+ */
 void dataProcessor(ppStruct ppD[TRANSDUCER_COUNT], pwmStruct pwmD[TRANSDUCER_COUNT])
 {
     unsigned int data[DATA_LENGTH];
@@ -180,26 +212,30 @@ void dataProcessor(ppStruct ppD[TRANSDUCER_COUNT], pwmStruct pwmD[TRANSDUCER_COU
 
         ppD[i].phase = data[i + 6];
         pwmD[i].magRatio = data[i + 14];
+        if(pwmD[i].magRatio%2 != 0)
+        {
+            printstrln("magRatio must contain all even numbers. Exiting.");
+            exit(1);
+        }
     }
 
     //introduce PP_DELAY to every pp
     for(size_t i = 0; i < TRANSDUCER_COUNT; ++i)
     {
-        ppD[i].phase = ppD[i].phase + PP_DELAY;
-        ppD[i].burstWait = (REF_RATE/ppD[i].brf) -
-                (REF_RATE*ppD[i].burstLength/ppD[i].prf);//-2
-        ppD[i].pulseWait = (REF_RATE/ppD[i].prf) -
-                (REF_RATE*ppD[i].pulseLength/ppD[i].frequency);//-2
-    }
-    for(size_t i = 0; i < TRANSDUCER_COUNT/2; ++i)
-    {
-        pwmD[2*i].magPhase = 0;
-        pwmD[(2*i) + 1].magPhase = 0;
-        pwmD[(2*i) + 1].magPhase = pwmPhaser(pwmD[2*i], pwmD[(2*i) + 1]);
+        ppD[i].phase = ppD[i].phase + (PP_DELAY*ppD[i].frequency/1000);
+        ppD[i].burstWait = (FULL_WIDTH*ppD[i].frequency/ppD[i].brf) -
+                (FULL_WIDTH*ppD[i].frequency*ppD[i].burstLength/ppD[i].prf);
+        ppD[i].pulseWait = (FULL_WIDTH*ppD[i].frequency/ppD[i].prf) -
+                (FULL_WIDTH*ppD[i].pulseLength);
     }
 }
 
 
+/*
+ *      Imports data from parameters text file
+ *
+ *      \param  data    data array
+ */
 void dataCapture(unsigned int data[DATA_LENGTH])
 {
     unsigned char readBuffer[BUFFER_SIZE];
@@ -225,7 +261,7 @@ void dataCapture(unsigned int data[DATA_LENGTH])
         }
     }
 
-    //convert text between '.' (parameters) from char to int
+    //convert string between '.' (parameters) from char to int
     for(size_t i = 0; i < DATA_LENGTH; ++i)
     {
         data[i] = 0;
@@ -236,7 +272,7 @@ void dataCapture(unsigned int data[DATA_LENGTH])
         {
             data[i] = data[i] * 10 + (readBuffer[j] - '0');
         }
-        //printf("%d\n",data[i]); //debugging
+        //printintln(data[i]); //debugging
     }
 
     if (_close(fd) != 0)
@@ -247,43 +283,26 @@ void dataCapture(unsigned int data[DATA_LENGTH])
 }
 
 
-//introduces phase shifts in pwm for optimising purposes
-short pwmPhaser(pwmStruct pwmD1, pwmStruct pwmD2)
-{
-    int roundTo5MagRatio = 0;
-    roundTo5MagRatio = 5*(int)round(pwmD1.magRatio / 5);
-
-    if(roundTo5MagRatio + pwmD2.magRatio + 5 != 50)
-    {
-        if(roundTo5MagRatio + pwmD2.magRatio + 5 - 50 == pwmD1.magRatio)
-        {
-            pwmD2.magPhase == roundTo5MagRatio + 10;//arbitrary phase addition
-        }
-        else
-        {
-            pwmD2.magPhase == roundTo5MagRatio + 5;
-        }
-    }
-    else
-    {
-        if(roundTo5MagRatio + pwmD2.magRatio + 10 - 50 == pwmD1.magRatio)
-        {
-            pwmD2.magPhase == roundTo5MagRatio + 15;//arbitrary phase addition
-        }
-        else
-        {
-            pwmD2.magPhase == roundTo5MagRatio + 10;
-        }
-    }
-    if(pwmD2.magPhase > 50)
-    {
-        pwmD2.magPhase -= 50;
-    }
-    return pwmD2.magPhase;
-
-}
-
-
+/*
+ *      Communicate to and configure Adafruit Si5351A via i2c protocol in order
+ *      to produce FULL_WIDTH*(pp frequency) clock. Output clock is equal to:
+ *
+ *      25MHz*(PLLmult + PLLnum/PLLdenom)/multisynthDiv
+ *
+ *      Use 0 for PLLnum and 1 for PLLdenom whenever possible for stability.
+ *      PLLmult =           15 to 0b10010
+ *      PLLnum =            0 to 1,048,575
+ *      PLLdenom =          1 to 1,048,575
+ *      multisynthDiv =     4, 6, 8 or 8 to 0b100100
+ *
+ *      Unknown complication below. If fixed, can utilise multisynthNum and
+ *      multisynthDenom instead of 0 and 1:
+ *      multisynthNum =     0 to 1,048,575
+ *      multisynthDenom =   1 to 1,048,575
+ *
+ *      \param  i2c     i2c one-way communication interface
+ *      \param  ppD     struct to store pp parameters
+ */
 void adaSet(client i2c_master_if i2c, ppStruct ppD) {
     Adafruit_SI5351 ada;
     Adafruit_SI5351Config(ada);
@@ -292,6 +311,7 @@ void adaSet(client i2c_master_if i2c, ppStruct ppD) {
         printstrln("Cannot connect to Adafruit SI5351. Exiting.");
         exit(1);
     }
+
     if(ppD.PLLnum == 0)
     {
         setupPLLInt(i2c, ada, SI5351_PLL_A, ppD.PLLmult);
@@ -300,203 +320,199 @@ void adaSet(client i2c_master_if i2c, ppStruct ppD) {
     {
         setupPLL(i2c, ada, SI5351_PLL_A, ppD.PLLmult, ppD.PLLnum, ppD.PLLdenom);
     }
-
-    if(ppD.multisynthNum == 0)
-    {
-        setupMultisynthInt(i2c, ada, 0, SI5351_PLL_A, ppD.multisynthDiv);
-    }
-    else
-    {
-        setupMultisynth(i2c, ada, 0, SI5351_PLL_A, ppD.multisynthDiv, ppD.multisynthNum, ppD.multisynthDenom);
-    }
+    //Has to have 0 and 1 as fractional components or this breaks and I don't know why
+    setupMultisynth(i2c, ada, 0, SI5351_PLL_A, ppD.multisynthDiv, 0, 1);
 
     enableOutputs(i2c, ada, true);
+    i2c.shutdown();
 }
 
 
-//clocks things over the head
-void clkSet()
-{
-    configure_clock_src(ppClk, inClk);
-    configure_clock_ref(pwmClk, 0);//2MHz at 50 tick waveperiod
-
-    //link 4 bit ports to ppClk. Initial out = 0
-    for(size_t i = 0; i < TRANSDUCER_COUNT/2; ++i)
-    {
-        configure_out_port(pp[i], ppClk, 0);
-    }
-    //link 1 bit ports to pwmClk. Initial out = 0
-    for(size_t i = 0; i < TRANSDUCER_COUNT; ++i)
-    {
-        configure_out_port(pwm[i], pwmClk, 0);
-    }
-}
-
-
-//drives pwm outputs
-void pwmDrive(pwmStruct pwmD1, pwmStruct pwmD2,
-        out buffered port:1 p1, out buffered port:1 p2, streaming chanend synchPulse)
+/*
+ *      Drives 2 transducers' pwm outputs. Runs in parallel with other pwm and pp tasks
+ *
+ *      \param  pwmD1       pwm data for first transducer
+ *      \param  pwmD2       pwm data for second transducer
+ *      \param  p1          output port for first transducer
+ *      \param  p2          output port for second transducer
+ *      \param synchPulse   channel via which ppDrive signals pwmDrive
+ *                          that test has ended
+ */
+void pwmDrive(pwmStruct pwmD1, pwmStruct pwmD2, out buffered port:1 p1,
+        out buffered port:1 p2, streaming chanend synchPulse)
 {
     int synch = 0;
     //current output values
     int currentDrive[4] = {1,1,0,0};
-    //t1 controls first transducer, t2 controls second transducer
-    unsigned int t1 = 20;//20 is arbitrarily added to minimise timing error
-    unsigned int t2 = 20 + pwmD2.magPhase;//test this
+    unsigned int t1Rise, t2Rise, t1Fall, t2Fall;
 
-    //saturated pwm detection
-    if(pwmD1.magRatio == 50)
+    //t1 variables control first transducer, t2 controls second transducer
+    //20 is arbitrarily added to minimise timing error
+    if(pwmD1.magRatio > pwmD2.magRatio)
+    {
+        t1Rise = 21;
+        t1Fall = 21 + pwmD1.magRatio;
+        t2Rise = 20;
+        t2Fall = 20 + pwmD2.magRatio;
+    }
+    else
+    {
+        t1Rise = 20;
+        t1Fall = 20 + pwmD1.magRatio;
+        t2Rise = 21;
+        t2Fall = 21 + pwmD2.magRatio;
+    }
+
+    //saturated pwm detection (if pwm is 0 or FULL_WIDTH)
+    if(pwmD1.magRatio == FULL_WIDTH)
     {
         currentDrive[0] = 1;
         currentDrive[2] = 1;
-        pwmD1.magRatio = 25;
+        pwmD1.magRatio = HALF_WIDTH;
     }
     else if(pwmD1.magRatio == 0)
     {
         currentDrive[0] = 0;
         currentDrive[2] = 0;
-        pwmD1.magRatio = 25;
+        pwmD1.magRatio = HALF_WIDTH;
     }
 
-    if(pwmD2.magRatio == 50)
+    if(pwmD2.magRatio == FULL_WIDTH)
     {
         currentDrive[1] = 1;
         currentDrive[3] = 1;
-        pwmD2.magRatio = 25;
+        pwmD2.magRatio = HALF_WIDTH;
     }
     else if(pwmD2.magRatio == 0)
     {
         currentDrive[1] = 0;
         currentDrive[3] = 0;
-        pwmD2.magRatio = 25;
+        pwmD2.magRatio = HALF_WIDTH;
     }
-    unsigned int magRatioInverse1 = 50 - pwmD1.magRatio;
-    unsigned int magRatioInverse2 = 50 - pwmD2.magRatio;
 
-    while(1)
+    //main drive loop. Returns if test ends
+    if(t1Rise < t2Rise)
     {
-        select
+        while(1)
         {
-        case synchPulse :> synch://returns if test has ended
-            if(synch == 1)
+            select
             {
-                return;
+            case synchPulse :> synch:
+                if(synch == 1)
+                {
+                    return;
+                }
+                break;
+            default:
+                p1 @ t1Rise <: currentDrive[0];
+                p2 @ t2Rise <: currentDrive[1];
+                p1 @ t1Fall <: currentDrive[2];
+                p2 @ t2Fall <: currentDrive[3];
+                t1Rise += FULL_WIDTH;
+                t2Rise += FULL_WIDTH;
+                t1Fall += FULL_WIDTH;
+                t2Fall += FULL_WIDTH;
+                break;
             }
-            break;
-        default://main drive loop
-            p1 @ t1 <: currentDrive[0];
-            p2 @ t2 <: currentDrive[1];
-            t1 += pwmD1.magRatio;
-            t2 += pwmD2.magRatio;
-            p1 @ t1 <: currentDrive[2];
-            p2 @ t2 <: currentDrive[3];
-            t1 += magRatioInverse1;
-            t2 += magRatioInverse2;
-            break;
+        }
+    }
+    else
+    {
+        while(1)
+        {
+            select
+            {
+            case synchPulse :> synch:
+                if(synch == 1)
+                {
+                    return;
+                }
+                break;
+            default:
+                p2 @ t2Rise <: currentDrive[1];
+                p1 @ t1Rise <: currentDrive[0];
+                p2 @ t2Fall <: currentDrive[3];
+                p1 @ t1Fall <: currentDrive[2];
+                t1Rise += FULL_WIDTH;
+                t2Rise += FULL_WIDTH;
+                t1Fall += FULL_WIDTH;
+                t2Fall += FULL_WIDTH;
+                break;
+            }
         }
     }
 }
 
 
-//drives pp outputs
+/*
+ *      Drives 2 transducers' pp outputs. Runs in parallel with other pwm and pp tasks
+ *
+ *      \param  ppD1        pp data for first transducer
+ *      \param  ppD2        pp data for second transducer
+ *      \param  p           4 bit output port for both transducers
+ *      \param synchPulse   channel via which ppDrive signals pwmDrive
+ *                          that test has ended
+ */
 void freqDrive(ppStruct ppD1, ppStruct ppD2, out buffered port:4 p, streaming chanend synchPulse)
 {
+    p <: 0b1111;
+    //t1 controls the 2 LSB (first transducer) and t2 controls the 2 MSB (second transducer)
     unsigned int t1 = ppD1.phase;
     unsigned int t2 = ppD2.phase;
-    //t1 controls the 2 LSB (first transducer) and t2 controls the 2 MSB (last transducer)
+
     signed int phaseDifference = t1 - t2;
-    unsigned int currentDrive = 5;//01|01 in binary
-    p <: currentDrive;
+    unsigned int currentDrive = 0b0101;
     synchPulse <: 0;
 
-    //main drive loop
-    while(1) //for(size_t i=0; i < testLength; ++i)
+    //main drive loop. Returns if test ends
+    for(size_t i=0; i < ppD1.testLength; ++i)
     {
-        while(1) //for(size_t i = 0; i < burstLength; ++i)
+        while(1) //debugging
+            //for(size_t i = 0; i < ppD1.burstLength; ++i)
         {
-            if(phaseDifference == 0)//if both transducers are of the same phase
+            //if both transducers are of the same phase
+            if(phaseDifference == 0)
             {
                 for(size_t i = 0; i < ppD1.pulseLength; ++i)
                 {
-                    p @ t1 <: currentDrive = 10; t1 += HALF_WIDTH;//10|10
-                    p @ t1 <: currentDrive = 5; t1 += HALF_WIDTH;//01|01
+                    p @ t1 <: currentDrive = 0b1010; t1 += HALF_WIDTH;
+                    p @ t1 <: currentDrive = 0b0101; t1 += HALF_WIDTH;
                 }
             }
-            else if(phaseDifference == HALF_WIDTH)//if first transducer is 180 phase behind
+
+            //if first transducer is 180 phase behind
+            else if(phaseDifference == HALF_WIDTH)
             {
                 for(size_t i = 0; i < ppD1.pulseLength; ++i)
                 {
-                    p @ t2 <: currentDrive = 9; t2 += HALF_WIDTH;//10|01
-                    p @ t2 <: currentDrive = 6; t2 += HALF_WIDTH;//01|10
+                    p @ t2 <: currentDrive = 0b1001; t2 += HALF_WIDTH;
+                    p @ t2 <: currentDrive = 0b0110; t2 += HALF_WIDTH;
                 }
             }
-            else if(phaseDifference == -HALF_WIDTH)//if second transducer is 180 phase behind
+
+            //if second transducer is 180 phase behind
+            else if(phaseDifference == -HALF_WIDTH)
             {
                 for(size_t i = 0; i < ppD1.pulseLength; ++i)
                 {
-                    p @ t1 <: currentDrive = 6; t1 += HALF_WIDTH;//01|10
-                    p @ t1 <: currentDrive = 9; t1 += HALF_WIDTH;//10|01
+                    p @ t1 <: currentDrive = 0b0110; t1 += HALF_WIDTH;
+                    p @ t1 <: currentDrive = 0b1001; t1 += HALF_WIDTH;
                 }
             }
-            else if(abs(phaseDifference) > HALF_WIDTH)
-            {
-                if(t1 < t2)
-                {
-                    p @ t1 <: currentDrive = 6;//01|10
-                    t1 += HALF_WIDTH;
-                    p @ t1 <: currentDrive = 5;//01|01
-                    t1 += HALF_WIDTH;
-                    for(size_t i = 0; i < ppD1.pulseLength - 1; ++i)
-                    {
-                        p @ t2 <: currentDrive = 9;//10|01
-                        p @ t1 <: currentDrive = 10;//10|10
-                        t1 += HALF_WIDTH;
-                        t2 += HALF_WIDTH;
-                        p @ t2 <: currentDrive = 6;//01|10
-                        p @ t1 <: currentDrive = 5;//01|01
-                        t1 += HALF_WIDTH;
-                        t2 += HALF_WIDTH;
-                    }
-                    p @ t2 <: currentDrive = 9;//10|01
-                    t2 += HALF_WIDTH;
-                    p @ t2 <: currentDrive = 5;//01|01
-                    t2 += HALF_WIDTH;
-                }
-                else
-                {
-                    p @ t2 <: currentDrive = 9;//10|01
-                    t2 += HALF_WIDTH;
-                    p @ t2 <: currentDrive = 5;//01|01
-                    t2 += HALF_WIDTH;
-                    for(size_t i = 0; i < ppD1.pulseLength - 1; ++i)
-                    {
-                        p @ t1 <: currentDrive = 6;//01|10
-                        p @ t2 <: currentDrive = 10;//10|10
-                        t1 += HALF_WIDTH;
-                        t2 += HALF_WIDTH;
-                        p @ t1 <: currentDrive = 9;//10|01
-                        p @ t2 <: currentDrive = 5;//01|01
-                        t1 += HALF_WIDTH;
-                        t2 += HALF_WIDTH;
-                    }
-                    p @ t1 <: currentDrive = 6;//01|10
-                    t1 += HALF_WIDTH;
-                    p @ t1 <: currentDrive = 5;//01|01
-                    t1 += HALF_WIDTH;
-                }
-            }
-            else
+
+            //non-special cases
+            else if(abs(phaseDifference) < HALF_WIDTH)
             {
                 if(t1 < t2)
                 {
                     for(size_t i = 0; i < ppD1.pulseLength; ++i)
                     {
-                        p @ t1 <: currentDrive = 6;//01|10
-                        p @ t2 <: currentDrive = 10;//10|10
+                        p @ t1 <: currentDrive = 0b0110;
+                        p @ t2 <: currentDrive = 0b1010;
                         t1 += HALF_WIDTH;
                         t2 += HALF_WIDTH;
-                        p @ t1 <: currentDrive = 9;//10|01
-                        p @ t2 <: currentDrive = 5;//01|01
+                        p @ t1 <: currentDrive = 0b1001;
+                        p @ t2 <: currentDrive = 0b0101;
                         t1 += HALF_WIDTH;
                         t2 += HALF_WIDTH;
                     }
@@ -505,15 +521,62 @@ void freqDrive(ppStruct ppD1, ppStruct ppD2, out buffered port:4 p, streaming ch
                 {
                     for(size_t i = 0; i < ppD1.pulseLength; ++i)
                     {
-                        p @ t2 <: currentDrive = 9;//10|01
-                        p @ t1 <: currentDrive = 10;//10|10
+                        p @ t2 <: currentDrive = 0b1001;
+                        p @ t1 <: currentDrive = 0b1010;
                         t1 += HALF_WIDTH;
                         t2 += HALF_WIDTH;
-                        p @ t2 <: currentDrive = 6;//01|10
-                        p @ t1 <: currentDrive = 5;//01|01
+                        p @ t2 <: currentDrive = 0b0110;
+                        p @ t1 <: currentDrive = 0b0101;
                         t1 += HALF_WIDTH;
                         t2 += HALF_WIDTH;
                     }
+                }
+            }
+            else //if(abs(phaseDifference) > HALF_WIDTH)
+            {
+                if(t1 < t2)
+                {
+                    p @ t1 <: currentDrive = 0b0110;
+                    t1 += HALF_WIDTH;
+                    p @ t1 <: currentDrive = 0b0101;
+                    t1 += HALF_WIDTH;
+                    for(size_t i = 0; i < ppD1.pulseLength - 1; ++i)
+                    {
+                        p @ t2 <: currentDrive = 0b1001;
+                        p @ t1 <: currentDrive = 0b1010;
+                        t1 += HALF_WIDTH;
+                        t2 += HALF_WIDTH;
+                        p @ t2 <: currentDrive = 0b0110;
+                        p @ t1 <: currentDrive = 0b0101;
+                        t1 += HALF_WIDTH;
+                        t2 += HALF_WIDTH;
+                    }
+                    p @ t2 <: currentDrive = 0b1001;
+                    t2 += HALF_WIDTH;
+                    p @ t2 <: currentDrive = 0b0101;
+                    t2 += HALF_WIDTH;
+                }
+                else
+                {
+                    p @ t2 <: currentDrive = 0b1001;
+                    t2 += HALF_WIDTH;
+                    p @ t2 <: currentDrive = 0b0101;
+                    t2 += HALF_WIDTH;
+                    for(size_t i = 0; i < ppD1.pulseLength - 1; ++i)
+                    {
+                        p @ t1 <: currentDrive = 0b0110;
+                        p @ t2 <: currentDrive = 0b1010;
+                        t1 += HALF_WIDTH;
+                        t2 += HALF_WIDTH;
+                        p @ t1 <: currentDrive = 0b1001;
+                        p @ t2 <: currentDrive = 0b0101;
+                        t1 += HALF_WIDTH;
+                        t2 += HALF_WIDTH;
+                    }
+                    p @ t1 <: currentDrive = 0b0110;
+                    t1 += HALF_WIDTH;
+                    p @ t1 <: currentDrive = 0b0101;
+                    t1 += HALF_WIDTH;
                 }
             }
             //wait before next pulse
@@ -524,6 +587,7 @@ void freqDrive(ppStruct ppD1, ppStruct ppD2, out buffered port:4 p, streaming ch
         t1 += ppD1.burstWait;
         t2 += ppD2.burstWait;
     }
-    synchPulse <: 1;//tell pwm to finish and return
+    //tell pwm to finish and return
+    synchPulse <: 1;
     return;
 }
