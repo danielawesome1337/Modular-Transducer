@@ -28,10 +28,10 @@ typedef struct
     //prf is the pulse repetition frequency (10000Hz max)
     short prf;
     //phase is an array of how many ticks each pp is out of phase where 0 is no shift
-    short phase;//0 to 49 or 2*HALF_WIDTH - 1
-    //burstWait is how many ticks to wait after each burst at clockRate
+    short phase;//0 to 49 or FULL_WIDTH - 1
+    //burstWait is how many ticks to wait after each burst
     unsigned int burstWait;
-    //pulseWait is how many ticks to wait after each pulse at clockRate
+    //pulseWait is how many ticks to wait after each pulse
     unsigned int pulseWait;
 } ppStruct;
 
@@ -39,15 +39,11 @@ typedef struct
 {
     //magRatio is an array of pwm 'on' period in a 50 tick waveperiod for every transducer
     short magRatio;//0 to 50
-    //magPhase is an array that introduces phase shifts in pwm for optimising purposes
-    short magPhase;
 } pwmStruct;
 
 void dataProcessor(ppStruct ppD[TRANSDUCER_COUNT], pwmStruct pwmD[TRANSDUCER_COUNT]);
 
 void dataCapture(unsigned int data[DATA_LENGTH]);
-
-short pwmPhaser(pwmStruct pwmD1, pwmStruct pwmD2);
 
 void clkSet();
 
