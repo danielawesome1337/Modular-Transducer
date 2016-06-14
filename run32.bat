@@ -5,7 +5,7 @@
 start /wait clockGenParams
 
 :: setup environment
-call "D:\Program Files (x86)\XMOS\Community_14.1.2\Community_14.2.0\SetEnv.bat"
+start "D:\Program Files (x86)\XMOS\Community_14.1.2\Community_14.2.0\SetEnv.bat"
 
 :: run slave binaries
 FOR \l %%x IN (2,1,32) DO (
